@@ -1,0 +1,105 @@
+from lark import Lark, Transformer, v_args
+
+ocdsl_grammar = """
+    start: rule
+    rule: "rule" NAME ":" "when" condition "do" action
+    condition: expr ("and" expr)*
+    action: NAME ":=" expr
+    expr: NAME | NUMBER | NAME "+" NAME
+    %import common.CNAME -> NAME
+    %import common.NUMBER
+    %import common.WS
+    %ignore WS
+"""
+
+dsl_parser = Lark(ocdsl_grammar, parser='lalr')
+
+@v_args(inline=True)
+class DSLTransformer(Transformer):
+    def rule(self, name, cond, act):
+        return {"rule_name": str(name), "condition": cond, "action": act}
+
+    def condition(self, *conds):
+        return list(conds)
+
+    def action(self, lhs, rhs):
+        return {"lhs": str(lhs), "rhs": rhs}
+
+    def expr(self, *args):
+        if len(args) == 3:
+            return {"type": "add", "args": [str(args[0]), str(args[2])]} 
+        else:
+            return str(args[0])
+
+# IR Type Definitions
+class IRRule:
+    def __init__(self, rule_name, condition, action):
+        self.rule_name = rule_name
+        self.condition = condition
+        self.action = action
+
+    def to_dict(self):
+        return {
+            "rule_name": self.rule_name,
+            "condition": self.condition,
+            "action": self.action
+        }
+
+# Verilog Generator
+class VerilogGenerator:
+    def __init__(self, ir):
+        self.ir = ir
+
+    def generate(self):
+        action = self.ir["action"]
+        cond = " & ".join(self.ir["condition"])
+        rhs = action["rhs"]
+        if isinstance(rhs, dict) and rhs["type"] == "add":
+            expr = f"{rhs['args'][0]} + {rhs['args'][1]}"
+        else:
+            expr = rhs
+        return f"always @(*) if ({cond}) {action['lhs']} = {expr};"
+
+# Testbench Generator (simplified)
+def generate_testbench(module_name, inputs, output):
+    tb = f"""
+module {module_name}_tb;
+  reg {', '.join(inputs)};
+  wire {output};
+  {module_name} uut(.{', .'.join(inputs)}, .{output}({output}));
+
+  initial begin
+    $display(\"Testing {module_name}\");
+    {'; '.join([f'{i} = 0' for i in inputs])};
+    #10;
+    {'; '.join([f'{i} = 1' for i in inputs])};
+    #10;
+    $finish;
+  end
+endmodule
+"""
+    return tb
+
+# Example DSL input
+example_input = """
+rule ADD:
+  when a_valid and b_valid
+  do sum := a + b
+"""
+
+tree = dsl_parser.parse(example_input)
+ir = DSLTransformer().transform(tree)
+
+if __name__ == "__main__":
+    import json
+    print("Parsed IR:")
+    print(json.dumps(ir, indent=2))
+
+    # Convert to Verilog
+    vg = VerilogGenerator(ir)
+    print("\nGenerated Verilog:")
+    print(vg.generate())
+
+    # Generate testbench
+    print("\nGenerated Testbench:")
+    print(generate_testbench("ADD_module", ["a_valid", "b_valid"], "sum"))
